@@ -1,16 +1,13 @@
 import argparse, os, sys, datetime, glob, importlib
-from omegaconf import OmegaConf
-import numpy as np
-from PIL import Image
-import torch
-# import torchvision
-from torch.utils.data import random_split, DataLoader, Dataset
+import torchaudio
+import wandb
 import pytorch_lightning as pl
+
+from torch.utils.data import random_split, DataLoader, Dataset
+from omegaconf import OmegaConf
 from pytorch_lightning import seed_everything
 from pytorch_lightning.trainer import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, Callback, LearningRateMonitor
-from pytorch_lightning.utilities import rank_zero_only
-import wandb,pudb
 
 from taming.data.utils import custom_collate
 
@@ -208,12 +205,14 @@ class SetupCallback(Callback):
                 os.makedirs(self.ckptdir,  exist_ok=True, mode=0o777)
                 os.makedirs(self.cfgdir, exist_ok=True, mode=0o777)
             except:
+                print("创建文件夹可能有问题")
                 current_dir = os.path.abspath(os.path.dirname(__file__))
-                if "data01" not in current_dir:
-                    root_dir="/storage/v-jinpewang/experiments/vqocr"
-                    os.makedirs(os.path.join(root_dir,self.logdir), exist_ok=True, mode=0o777)
-                    os.makedirs(os.path.join(root_dir,self.ckptdir),  exist_ok=True, mode=0o777)
-                    os.makedirs(os.path.join(root_dir,self.cfgdir), exist_ok=True, mode=0o777)
+                pass
+                # if "data01" not in current_dir:
+                #     root_dir="/storage/v-jinpewang/experiments/vqocr"
+                #     os.makedirs(os.path.join(root_dir,self.logdir), exist_ok=True, mode=0o777)
+                #     os.makedirs(os.path.join(root_dir,self.ckptdir),  exist_ok=True, mode=0o777)
+                #     os.makedirs(os.path.join(root_dir,self.cfgdir), exist_ok=True, mode=0o777)
 
             print("Project config")
             print(self.config.pretty())
@@ -240,15 +239,6 @@ class SetupCallback(Callback):
 if __name__ == "__main__":
 
     os.environ["TOKENIZERS_PARALLELISM"] = "false"   #存在警告 
-
-    print("torch.__version__*****************************",torch.__version__)
-    print("pytorch_lightning.__version__*****************************",pl.__version__)    
-    if torch.cuda.is_available():
-        print("CUDA is available.")
-        print("CUDA version:", torch.version.cuda)
-        print("NCCL version:", torch.cuda.nccl.version())
-    else:
-        print("CUDA is not available.")
     
     wandb.login(key='4f45bb987fb2be5aeddd971f6e5ef8e0d7793717',relogin=True)
     now = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
@@ -297,6 +287,7 @@ if __name__ == "__main__":
 
     ckptdir = os.path.join(logdir, "checkpoints")
     cfgdir = os.path.join(logdir, "configs")
+    wandbdir = os.path.join(logdir, "wandb")
     seed_everything(opt.seed)
 
     try:
@@ -328,11 +319,13 @@ if __name__ == "__main__":
         trainer_kwargs = dict()
 
         # default logger configs
+        
+        os.makedirs(wandbdir, exist_ok=True, mode=0o777)  # logs dir creat
         default_logger_cfgs = {
             "wandb": {
                 "target": "pytorch_lightning.loggers.WandbLogger",
                 "params": {
-                    "project":"pmllm", 
+                    "project":"AbAgker", 
                     "entity":"mllm-csu",
                     "name": nowname,
                     "save_dir": logdir,
@@ -348,8 +341,6 @@ if __name__ == "__main__":
                 }
             },
         }
-        os.makedirs(logdir, exist_ok=True, mode=0o777)  # logs dir create 
-
 
         default_logger_cfg = default_logger_cfgs["wandb"]
         logger_cfg = lightning_config.logger or OmegaConf.create()
@@ -402,12 +393,14 @@ if __name__ == "__main__":
         trainer_kwargs["callbacks"] = [instantiate_from_config(callbacks_cfg[k]) for k in callbacks_cfg]
 
         trainer_kwargs["num_nodes"] = int(parser.parse_args().gpu_nodes)
-        trainer_kwargs["max_epochs"] = 80 # 固定max-epoch: 100
-        trainer_kwargs["max_steps"] = 100000 # 固定max-epoch: 100
-        trainer_kwargs["val_check_interval"] = 250 # 固定验证间隔: int(1000)
+        # trainer_kwargs["max_epochs"] = 50 # 固定max-epoch: 100
+        # trainer_kwargs["max_steps"] = 100000 # 固定max-epoch: 100
+        # trainer_kwargs["val_check_interval"] = 250 # 固定验证间隔: int(1000)
         
-        # trainer_kwargs["max_epochs"] = 10 # 固定max-epoch: 100
-        # trainer_kwargs["val_check_interval"] = 0.2 # 固定验证间隔: int(1000)
+        trainer_kwargs["max_epochs"] = 50 # 固定max-epoch: 100
+        trainer_kwargs["val_check_interval"] = 0.25 # 固定验证间隔: int(1000)
+        trainer_kwargs["log_every_n_steps"] = 5 # 固定验证间隔: int(1000)
+
         trainer = Trainer.from_argparse_args(trainer_opt, **trainer_kwargs)
 
         # data

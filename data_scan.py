@@ -112,8 +112,8 @@ if __name__ == "__main__":
     
     # protein with pocket dataset
     train_sums=1000
-    val_sums=10
-    image_dir="C:/Users/lg/Desktop/Work-related/0-Code/AbAgKer/data/origin_json/skempi_AbAg_Kall237.json"  
-    save_dir="C:/Users/lg/Desktop/Work-related/0-Code/AbAgKer/data/"
+    val_sums=20
+    image_dir="/root/private_data/luog/AbAgker/data/origin_json/skempi_AbAg_Kall237.json"  
+    save_dir="/root/private_data/luog/AbAgker/data/"
     os.makedirs(save_dir,exist_ok=True)
     image2txtfile_json(train_sums,val_sums,image_dir,save_dir,True) # using all dataste: True or False
