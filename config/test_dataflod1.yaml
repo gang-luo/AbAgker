@@ -1,0 +1,75 @@
+model:
+  base_learning_rate: 5.0e-6
+  target: taming.models.model_pmllm_S1.PmllmModel
+  params:
+    model_name: AbAg  # PP or AbAg
+    frozen_H: True
+    frozen_L: True
+    frozen_esm2: True
+    H_llm: /root/private_data/luog/pretrained_LLM/palm/Heavy_roformer
+    L_llm: /root/private_data/luog/pretrained_LLM/palm/Light_roformer
+    ems2_llm: /root/private_data/luog/pretrained_LLM/esm2_t30
+    ab_maxlen: 512 # max len is 613
+    ag_maxlen: 640
+    training_evaluate: True
+    scheduler_type: None
+    # ckpt_path:  /storage/v-jinpewang/experiments/vqocr/logs/2024-09-04T23-38-16_vqgan_model_rendered_text_image_100k_server/checkpoints/last.ckpt
+    # ignore_keys: ['loss']
+    
+    mixed_config:
+      target: taming.modules.losses.loss_pmllm_S1.mixed_model 
+      params:
+          model_name: AbAg  # PP or AbAg
+
+          # feature transfor
+          ab_edim: 768 
+          ag_edim: 640 # 确定
+
+          # mixed part
+          d_model: 768
+          num_heads: 12
+          fd_dim: 3072
+          num_layers: 1
+          dp_out: 0.1
+
+    lossconfig:
+      target: taming.modules.losses.loss_pmllm_S1.CELoss 
+      params:
+        # different loss weights
+        d_model: 768
+        kd_weight: 1.0
+        kon_weight: 1.0
+        koff_weight: 1.0
+
+# # 正式
+# data:
+#   target: main.DataModuleFromConfig
+#   params:
+#     batch_size: 8
+#     num_workers: 16
+#     train:
+#       target: taming.data.PM_Data.DataTrain
+#       params:
+#         training_list_file: data/DTA_pocket/train_index161_all.json
+#     validation:
+#       target: taming.data.PM_Data.DataVal
+#       params:
+#         val_list_file: data/DTA_pocket/val_index161.json
+
+
+data:
+  target: main.DataModuleFromConfig
+  params:
+    batch_size: 2
+    num_workers: 1
+    train:
+      target: taming.data.PM_Data.DataTrain
+      params:
+        training_list_file: /root/private_data/luog/AbAgker/data/data_1flod/train_7.json
+    validation:
+      target: taming.data.PM_Data.DataVal
+      params:
+        val_list_file: /root/private_data/luog/AbAgker/data/data_1flod/test_3.json
+
+
+

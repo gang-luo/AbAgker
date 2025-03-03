@@ -1,24 +1,20 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import pytorch_lightning as pl
-from transformers import AutoModel,AutoModelForMaskedLM,AutoTokenizer
+from transformers import AutoModel,AutoTokenizer
 
 from PALM.Code.bert_data_prepare.tokenizer import get_tokenizer
 from transformers import AutoTokenizer,AutoModel
-from transformers import AutoModel,RoFormerModel
-
-import torchmetrics
 from torchmetrics import PearsonCorrCoef, SpearmanCorrCoef, MeanSquaredError, MeanAbsoluteError
-from scipy.stats import pearsonr
 
 from main import instantiate_from_config
 from PALM.Code.bert_data_prepare.tokenizer import CommonTokenizer
+from taming.modules.autoencoder.A2binder import MF_CNN
 from torchmetrics.functional import r2_score
 
-class PmllmModel(pl.LightningModule): 
+
+class A2binder(pl.LightningModule): 
     def __init__(self,
-                 mixed_config,
                  lossconfig,
                  model_name="pretrain",
                  ### llm config
@@ -51,19 +47,37 @@ class PmllmModel(pl.LightningModule):
         self.frozen_LRoformer_llm = frozen_L
         self.frozen_esm2_llm = frozen_esm2
 
-        # arctecture and loss
-        self.mixed_model=instantiate_from_config(mixed_config)
-        self.loss = instantiate_from_config(lossconfig)
-        
-        # proteins and mols pretrained model       
+        # proteins and mols pretrained model   
+        self.loss = instantiate_from_config(lossconfig)    
         self.HeavyModel = AutoModel.from_pretrained(H_llm, output_hidden_states=True, return_dict=True)
         self.LightModel = AutoModel.from_pretrained(L_llm, output_hidden_states=True, return_dict=True)
         self.AntigenModel = AutoModel.from_pretrained(ems2_llm, output_hidden_states=True, return_dict=True)
 
+        # A2binder模型定义与构建
+        self.emb_dim=256
+        self.cnn1 = MF_CNN(in_channel= 512)
+        self.cnn2 = MF_CNN(in_channel = 512)
+        self.cnn3 = MF_CNN(in_channel = 640,hidden_size=76)
+
+        self.binding_predict = nn.Sequential(
+            nn.Linear(in_features=128 * 3, out_features=self.emb_dim),
+            nn.ReLU(),
+            nn.Linear(in_features=self.emb_dim, out_features=self.emb_dim),
+            nn.ReLU(),
+            nn.Linear(in_features=self.emb_dim, out_features=1)
+        )
+
+        self.binding_koff_predict = nn.Sequential(
+            nn.Linear(in_features=128 * 3, out_features=self.emb_dim),
+            nn.ReLU(),
+            nn.Linear(in_features=self.emb_dim, out_features=self.emb_dim),
+            nn.ReLU(),
+            nn.Linear(in_features=self.emb_dim, out_features=1)
+        )
+
         ### 重链 and 轻链 tokenizer
         self.tokenizer = CommonTokenizer(logger=None, add_hyphen=False)
         self.heavy_tokenizer = self.tokenizer.get_bert_tokenizer(max_len=self.ab_maxlen, tokenizer_dir=H_llm)
-        # self.light_tokenizer = self.tokenizer.get_bert_tokenizer(max_len=self.ab_maxlen, tokenizer_dir=L_llm)
         self.antigen_tokenizer = AutoTokenizer.from_pretrained(ems2_llm,trust_remote_code=True,max_len = self.ag_maxlen)
 
         # some funtional config
@@ -77,8 +91,8 @@ class PmllmModel(pl.LightningModule):
         ### 评估策略
         # 初始化评估指标
         self.pearson = PearsonCorrCoef()
-        self.spearman = SpearmanCorrCoef()
         self.pearson2 = PearsonCorrCoef()
+        self.spearman = SpearmanCorrCoef()
         self.spearman2 = SpearmanCorrCoef()
 
     def init_from_ckpt(self, path, ignore_keys=list()):
@@ -119,27 +133,41 @@ class PmllmModel(pl.LightningModule):
                                      return_tensors="pt",
                                      add_special_tokens=True).to(self.AntigenModel.device)
 
-
         # tensor化
         Ab_H_emb = self.H_encoder(H_info)
         Ab_L_emb = self.L_encoder(L_info)
         Ag_emb = self.Ag_encoder(X_info)
+        
+        heavy_cls = self.cnn1(Ab_H_emb)
+        light_cls = self.cnn2(Ab_L_emb)
+        antigen_cls = self.cnn3(Ag_emb)
+        
+        concated_encoded = torch.concat((heavy_cls,light_cls,antigen_cls) , dim = 1)
 
-        # 特征融合，预测DTA 
-        outputs_pm = self.mixed_model(Ab_H_emb, Ab_L_emb, Ag_emb, training_mask)
+        output_kd = self.binding_predict(concated_encoded)
+        output_koff = self.binding_koff_predict(concated_encoded)
 
-        return outputs_pm
+        return output_kd.squeeze(),output_koff.squeeze()
+
+    def training_step(self, batch, batch_idx, optimizer_idx=0):
+
+        Ab_H, Ab_L, Ag_X, kd, kon, koff = self.get_input(batch)
+        kd_pre, koff_pre = self(Ab_H,Ab_L,Ag_X, self.training_mask)
+
+        if optimizer_idx == 0: 
+            total_loss, log_dict = self.loss(kd_pre, koff_pre, kd, kon, koff, optimizer_idx, split="train") 
+            self.log_dict(log_dict, prog_bar=False, logger=True, on_step=True, on_epoch=True)
+
+            return total_loss
 
     def validation_step(self, batch, batch_idx):
         
         # 验证阶段
         Ab_H, Ab_L, Ag_X, kd, kon, koff = self.get_input(batch)
-        outputs_pm = self(Ab_H,Ab_L,Ag_X, self.training_mask)
+        kd_pre, koff_pre= self(Ab_H,Ab_L,Ag_X, self.training_mask)
 
-        total_loss, log_dict = self.loss(outputs_pm, kd, kon, koff, 0, split="val") 
+        total_loss, log_dict = self.loss(kd_pre, koff_pre, kd, kon, koff, 0, split="val") 
         self.log_dict(log_dict, prog_bar=False, logger=True, on_step=True, on_epoch=True)
-
-        kd_pre, _, koff_pre = self.loss.DT_pre(outputs_pm)
 
         # 更新评估指标
         self.pearson.update(kd_pre, kd)
@@ -150,27 +178,30 @@ class PmllmModel(pl.LightningModule):
         return {"kd": kd, "kd_pre": kd_pre,"koff": koff, "koff_pre": koff_pre }
 
     def validation_epoch_end(self, outputs):
-        kd = []
-        kd_pre = []
-        koff = []
-        koff_pre = []
-        for i in outputs:
-            if kd==[]:
-                kd = i["kd"]
-                kd_pre = i["kd_pre"] 
-                koff = i["koff"] 
-                koff_pre = i["koff_pre"]
-            else:
-                kd = torch.cat([kd,i["kd"]], dim=0)
-                kd_pre = torch.cat([kd_pre,i["kd_pre"]], dim=0)
-                koff = torch.cat([koff,i["koff"]], dim=0)
-                koff_pre = torch.cat([koff_pre,i["koff_pre"]], dim=0)
         
+        kd_list, kd_pre_list, koff_list, koff_pre_list = [], [], [], []
+        for i in outputs:
+            kd_list.append(i["kd"])
+            kd_pre_list.append(i["kd_pre"])
+            koff_list.append(i["koff"])
+            koff_pre_list.append(i["koff_pre"])
+
+        # 然后再拼接
+        kd = torch.cat(kd_list, dim=0)
+        kd_pre = torch.cat(kd_pre_list, dim=0)
+        koff = torch.cat(koff_list, dim=0)
+        koff_pre = torch.cat(koff_pre_list, dim=0)
+
         # 计算整个 epoch 的 R² 评估指标
-        r2_kd = r2_score(kd_pre, kd)
-        r2_koff = r2_score(koff_pre, koff)
+        # r2_kd = r2_score(kd_pre, kd)
+        # r2_koff = r2_score(koff_pre, koff)
+        r2_kd = r2_score(kd_pre.float(), kd.float())
+        r2_koff = r2_score(koff_pre.float(), koff.float())  
         self.log('val/kd_r2', r2_kd, prog_bar=False)
         self.log('val/koff_r2', r2_koff, prog_bar=False)
+        r2_kd = r2_score(kd_pre.float(), kd.float())
+        r2_koff = r2_score(koff_pre.float(), koff.float())  
+
     
         # 计算每个指标的值
         pearson_r = self.pearson.compute().item()
@@ -186,26 +217,6 @@ class PmllmModel(pl.LightningModule):
         self.log('val/koff_spearman', spearman_r2, prog_bar=False)
         self.pearson2.reset()
         self.spearman2.reset()
-
-
-    def training_step(self, batch, batch_idx, optimizer_idx=0):
-        if self.model_name == "AbAg":
-
-            Ab_H, Ab_L, Ag_X, kd, kon, koff = self.get_input(batch)
-            outputs_pm = self(Ab_H,Ab_L,Ag_X, self.training_mask)
-
-        # elif self.model_name == "PP": 
-
-        #     prot1, prot2, kd, kon, koff = self.get_input(batch)
-        #     outputs_pm = self(prot1,prot2)
-
-        # loss
-        if optimizer_idx == 0: 
-
-            total_loss, log_dict = self.loss(outputs_pm, kd, kon, koff, optimizer_idx,split="train") 
-            self.log_dict(log_dict, prog_bar=False, logger=True, on_step=True, on_epoch=True)
-
-            return total_loss
 
 
     def get_input(self, batch):
@@ -236,7 +247,14 @@ class PmllmModel(pl.LightningModule):
                 param.requires_grad = False
 
         lr = self.learning_rate
-        opt_mixed = torch.optim.AdamW( list(self.mixed_model.parameters()) +
+
+        # opt_mixed = torch.optim.AdamW(list(self.parameters()) + list(self.loss.parameters()), lr=lr, betas=(0.5, 0.9))
+
+        opt_mixed = torch.optim.AdamW(list(self.cnn1.parameters())+
+                                        list(self.cnn2.parameters())+
+                                        list(self.cnn3.parameters())+
+                                        list(self.binding_predict.parameters())+
+                                        list(self.binding_koff_predict.parameters())+
                                         list(self.loss.parameters()), 
                                         lr=lr, betas=(0.5, 0.9))
 

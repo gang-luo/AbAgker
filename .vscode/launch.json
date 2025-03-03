@@ -12,14 +12,14 @@
             "console": "integratedTerminal"
         },
         {
-            "name": "train-debug",
+            "name": "debug",
             "type": "debugpy",
             "request": "launch",
             "program": "main.py",
             "console": "integratedTerminal",
             "python": "python",
             "args": [
-                "--base", "config/M1_esm2_palm_data_random.yaml",
+                "--base", "config/test_dataflod1.yaml",
                 "--gpu_nodes", "1",
                 "--train", "True",
                 "--gpus", "0,",

@@ -43,8 +43,10 @@ class CELoss(nn.Module):
         
         # 损失函数定义
         self.gelu = nn.GELU()
-        self.huber_loss = nn.HuberLoss(reduction='mean', delta=1.0)
-        self.L1Loss = torch.nn.SmoothL1Loss(reduction='mean')
+        # self.huber_loss = nn.HuberLoss(reduction='mean', delta=1.0)
+        # self.L1Loss = torch.nn.SmoothL1Loss(reduction='mean')
+        self.MSEloss = torch.nn.MSELoss(reduction='mean')
+        self.MAEloss = torch.nn.L1Loss(reduction='mean')
 
         # DT layer 
         self.mid = 256
@@ -83,16 +85,18 @@ class CELoss(nn.Module):
             kd_pre, kon_pre, koff_pre = self.DT_pre(inputs_pm)
 
             # 这里同时计算所有的token进行损失计算
-            loss_kd = self.L1Loss(kd_pre, kd)
-            loss_off = self.huber_loss(koff_pre, koff) 
-            loss_kon = self.huber_loss((koff_pre-kd_pre), kon) # loss_kon = self.huber_loss((kon_pre), kon)
+            loss_kd = self.MSEloss(kd_pre, kd)
+            loss_off = self.MSEloss(koff_pre, koff) 
+            loss_kon = self.MSEloss((koff_pre-kd_pre), kon) # loss_kon = self.huber_loss((kon_pre), kon)
                 
             loss = loss_kd * self.kd_weight + loss_off * self.koff_weight  
 
             log = {"{}/loss".format(split): loss.clone().detach(), 
                 "{}/loss_kd".format(split): loss_kd.clone().detach(),
                 "{}/loss_kon".format(split): loss_kon.clone().detach(),
-                "{}/loss_koff".format(split): loss_off.clone().detach()
+                "{}/loss_koff".format(split): loss_off.clone().detach(),
+                "{}/loss_kd_L1".format(split): self.MAEloss(kd_pre, kd).clone().detach(),
+                "{}/loss_koff_L1".format(split): self.MAEloss(koff_pre, koff).clone().detach()
                 }
 
         return loss,log
@@ -146,15 +150,17 @@ class mixed_model(nn.Module):
         # Ab_L_emb = self.l_emb(Ab_L_emb)
         Ag_emb = self.x_emb(Ag_emb)
 
-        # 模态信息注入
-        Ab_H = self.gelu(self.f_extr(Ab_H_emb,0.0)) # [b, 512, 768]
-        Ab_L = self.gelu(self.f_extr(Ab_L_emb,1.0)) # [b, 512, 768]
-        Ag = self.gelu(self.f_extr(Ag_emb,2.0)) # [b , 640, 768]
+        # # 模态信息注入
+        # Ab_H = self.gelu(self.f_extr(Ab_H_emb,0.0)) # [b, 512, 768]
+        # Ab_L = self.gelu(self.f_extr(Ab_L_emb,1.0)) # [b, 512, 768]
+        # Ag = self.gelu(self.f_extr(Ag_emb,2.0)) # [b , 640, 768]
 
-        # 特征拼接
-        inputs_pm = torch.cat([Ab_H, Ab_L,Ag],dim=1)
+        # # 特征拼接
+        # inputs_pm = torch.cat([Ab_H, Ab_L,Ag],dim=1)
+        inputs_pm = torch.cat([Ab_H_emb, Ab_L_emb,Ag_emb],dim=1)
 
-        # 特征混合
+
+        # 特征混合 
         for layer in self.layers:
             layer_output = layer(inputs_pm,None)
             inputs_pm = layer_output[0] 
