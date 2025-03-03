@@ -1,4 +1,5 @@
-PALM/
 logs/
 .pyc
 data/data_*/
+other_model
+PALM
